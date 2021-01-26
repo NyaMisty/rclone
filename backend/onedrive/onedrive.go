@@ -1963,6 +1963,8 @@ func (o *Object) ID() string {
 	return o.id
 }
 
+// newOptsCall build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID)
+// using url template https://{Endpoint}/drives/{driveID}/items/{itemID}/{route}
 func (f *Fs) newOptsCall(normalizedID string, method string, route string) (opts rest.Opts) {
 	id, drive, rootURL := f.parseNormalizedID(normalizedID)
 
@@ -1983,6 +1985,23 @@ func escapeSingleQuote(str string) string {
 	return strings.ReplaceAll(str, "'", "''")
 }
 
+// parseNormalizedID parses a normalized ID (may be in the form `driveID#itemID` or just `itemID`)
+// and returns itemID, driveID, rootURL.
+// Such a normalized ID can come from (*Item).GetID()
+func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
+	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
+	if strings.Index(ID, "#") >= 0 {
+		s := strings.Split(ID, "#")
+		//return s[1], s[0], graphURL + "/drives"
+		return s[1], s[0], rootURL
+	}
+	return ID, "", ""
+}
+
+// newOptsCallWithIDPath build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID) and leaf
+// using url template https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route}
+// or https://{Endpoint}/drives/{driveID}/items/children('{leaf}')/{route}
+// this function will only work when the leaf is "" or a child name (i.e. it doesn't accept multi-level leaf)
 func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, method string, route string) (opts rest.Opts, ok bool) {
 	trueDirID, drive, rootURL := f.parseNormalizedID(normalizedID)
 	if drive == "" {
@@ -2011,6 +2030,22 @@ func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, method stri
 	return
 }
 
+// newOptsCallWithIDPath build the rest.Opts structure with an absolute path start from root
+// using url template https://{Endpoint}/drives/{driveID}/root:/{path}:/{route}
+// or https://{Endpoint}/drives/{driveID}/root/children('@a1')/{route}?@a1=URLEncode({path})
+func (f *Fs) newOptsCallWithRootPath(path string, method string, route string) (opts rest.Opts) {
+	newUrl := "/root:/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardPath(path))) + route
+	if f.opt.Region == regionCN {
+		newUrl = "/root/children('@a1')" + route + "?@a1=" + url.QueryEscape("'"+escapeSingleQuote(f.opt.Enc.FromStandardPath(path))+"'")
+	}
+	return rest.Opts{
+		Method: method,
+		Path:   newUrl,
+	}
+}
+
+// newOptsCallWithPath build the rest.Opt intelligently, which will first try to resolve the path using dircache.
+// If present in cache, then use IDPath variant, else fallback into RootPath variant
 func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string, route string) (opts rest.Opts) {
 	if path == "" {
 		url := "/root" + route
@@ -2027,42 +2062,7 @@ func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string
 	if opts, ok := f.newOptsCallWithIDPath(directoryID, leaf, method, route); ok {
 		return opts
 	}
-	/*trueDirID, drive, rootURL := f.parseNormalizedID(directoryID)
-
-	if drive != "" {
-		path := "/" + drive + "/items/" + trueDirID + ":/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardName(leaf))) + route
-		if f.opt.Region == regionCN {
-			//path = "/" + drive + "/items/" + trueDirID + "/children('@a1')" + route + "?@a1=" + url.QueryEscape("'" + f.opt.Enc.FromStandardName(leaf) + "'")
-			path = "/" + drive + "/items/" + trueDirID + "/children('" + rest.URLPathEscape(f.opt.Enc.FromStandardName(escapeSingleQuote(leaf))) + "')" + route
-		}
-		return rest.Opts{
-			Method:  method,
-			RootURL: rootURL,
-			Path:    path,
-		}
-	}*/
-	//newUrl := "/root:/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardPath(f.rootSlash() + path))) + route
-	newUrl := "/root:/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardPath(path))) + route
-	if f.opt.Region == regionCN {
-		newUrl = "/root/children('@a1')" + route + "?@a1=" + url.QueryEscape("'"+escapeSingleQuote(f.opt.Enc.FromStandardPath(path))+"'")
-	}
-	return rest.Opts{
-		Method: method,
-		Path:   newUrl,
-	}
-}
-
-// parseNormalizedID parses a normalized ID (may be in the form `driveID#itemID` or just `itemID`)
-// and returns itemID, driveID, rootURL.
-// Such a normalized ID can come from (*Item).GetID()
-func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
-	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
-	if strings.Index(ID, "#") >= 0 {
-		s := strings.Split(ID, "#")
-		//return s[1], s[0], graphURL + "/drives"
-		return s[1], s[0], rootURL
-	}
-	return ID, "", ""
+	return f.newOptsCallWithRootPath(path, method, route)
 }
 
 // Returns the canonical form of the driveID
