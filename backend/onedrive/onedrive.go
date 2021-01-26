@@ -2030,13 +2030,12 @@ func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool
 			Path:   entity,
 		}
 		return
-	} else {
-		ok = true
-		opts = rest.Opts{
-			Method:  method,
-			RootURL: rootURL,
-			Path:    "/" + drive + entity,
-		}
+	}
+	ok = true
+	opts = rest.Opts{
+		Method:  method,
+		RootURL: rootURL,
+		Path:    "/" + drive + entity,
 	}
 	return
 }
@@ -2045,13 +2044,14 @@ func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool
 // using url template https://{Endpoint}/drives/{driveID}/root:/{path}:/{route}
 // or https://{Endpoint}/drives/{driveID}/root/children('@a1')/{route}?@a1=URLEncode({path})
 func (f *Fs) newOptsCallWithRootPath(path string, method string, route string) (opts rest.Opts) {
-	newUrl := "/root:/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardPath(path))) + route
+	path = strings.TrimSuffix(path, "/")
+	newURL := "/root:/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardPath(path))) + route
 	if f.opt.Region == regionCN {
-		newUrl = "/root/children('@a1')" + route + "?@a1=" + url.QueryEscape("'"+escapeSingleQuote(f.opt.Enc.FromStandardPath(path))+"'")
+		newURL = "/root/children('@a1')" + route + "?@a1=" + url.QueryEscape("'"+escapeSingleQuote(f.opt.Enc.FromStandardPath(path))+"'")
 	}
 	return rest.Opts{
 		Method: method,
-		Path:   newUrl,
+		Path:   newURL,
 	}
 }
 
