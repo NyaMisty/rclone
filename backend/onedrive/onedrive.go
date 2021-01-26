@@ -1963,6 +1963,24 @@ func (o *Object) ID() string {
 	return o.id
 }
 
+/*
+ *       URL Build routine area start
+ *       In this area, region-related URL rewrites are applied. Please be extreme carefully while changing them
+ */
+
+// parseNormalizedID parses a normalized ID (may be in the form `driveID#itemID` or just `itemID`)
+// and returns itemID, driveID, rootURL.
+// Such a normalized ID can come from (*Item).GetID()
+func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
+	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
+	if strings.Index(ID, "#") >= 0 {
+		s := strings.Split(ID, "#")
+		//return s[1], s[0], graphURL + "/drives"
+		return s[1], s[0], rootURL
+	}
+	return ID, "", ""
+}
+
 // newOptsCall build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID)
 // using url template https://{Endpoint}/drives/{driveID}/items/{itemID}/{route}
 func (f *Fs) newOptsCall(normalizedID string, method string, route string) (opts rest.Opts) {
@@ -1983,19 +2001,6 @@ func (f *Fs) newOptsCall(normalizedID string, method string, route string) (opts
 
 func escapeSingleQuote(str string) string {
 	return strings.ReplaceAll(str, "'", "''")
-}
-
-// parseNormalizedID parses a normalized ID (may be in the form `driveID#itemID` or just `itemID`)
-// and returns itemID, driveID, rootURL.
-// Such a normalized ID can come from (*Item).GetID()
-func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
-	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
-	if strings.Index(ID, "#") >= 0 {
-		s := strings.Split(ID, "#")
-		//return s[1], s[0], graphURL + "/drives"
-		return s[1], s[0], rootURL
-	}
-	return ID, "", ""
 }
 
 // newOptsCallWithIDPath build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID) and leaf
@@ -2049,9 +2054,6 @@ func (f *Fs) newOptsCallWithRootPath(path string, method string, route string) (
 func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string, route string) (opts rest.Opts) {
 	if path == "" {
 		url := "/root" + route
-		if f.opt.Region == regionCN {
-			url = "/root/children" + route
-		}
 		return rest.Opts{
 			Method: method,
 			Path:   url,
@@ -2064,6 +2066,10 @@ func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string
 	}
 	return f.newOptsCallWithRootPath(path, method, route)
 }
+
+/*
+ *       URL Build routine area end
+ */
 
 // Returns the canonical form of the driveID
 func (f *Fs) canonicalDriveID(driveID string) (canonicalDriveID string) {
