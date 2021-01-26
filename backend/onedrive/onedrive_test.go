@@ -17,13 +17,17 @@ func TestIntegration(t *testing.T) {
 			CeilChunkSize: fstests.NextMultipleOf(chunkSizeMultiple),
 		},
 	})
-	/*fstests.Run(t, &fstests.Opt{
+}
+
+// TestIntegrationCn runs integration tests against the remote
+func TestIntegrationCn(t *testing.T) {
+	fstests.Run(t, &fstests.Opt{
 		RemoteName: "TestOneDriveCn:",
 		NilObject:  (*Object)(nil),
 		ChunkedUpload: fstests.ChunkedUploadConfig{
 			CeilChunkSize: fstests.NextMultipleOf(chunkSizeMultiple),
 		},
-	})*/
+	})
 }
 
 func (f *Fs) SetUploadChunkSize(cs fs.SizeSuffix) (fs.SizeSuffix, error) {
