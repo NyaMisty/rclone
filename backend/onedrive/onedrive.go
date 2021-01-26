@@ -1964,7 +1964,22 @@ func (o *Object) ID() string {
 
 /*
  *       URL Build routine area start
- *       In this area, region-related URL rewrites are applied. Please be extreme carefully while changing them
+ *       1. In this area, region-related URL rewrites are applied. As the API is blackbox,
+ *          we cannot thoroughly test this part. Please be extremely careful while changing them.
+ *       2. If possible, please don't introduce region related code in other region, but patch these helper functions.
+ *       3. To avoid region-related issues, please don't manually build rest.Opts from scratch.
+ *          Instead, use these helper function, and customize the URL afterwards if needed.
+ *
+ *       currently, the 21ViaNet's API differs in the following places:
+ *       - https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route}
+ *           - this API doesn't work (gives invalid request)
+ *           - can be replaced with the following API:
+ *               - https://{Endpoint}/drives/{driveID}/items/children('{leaf}')/{route}
+ *                   - however, this API does NOT support multi-level leaf like a/b/c
+ *               - https://{Endpoint}/drives/{driveID}/items/children('@a1')/{route}?@a1=URLEncode("'{leaf}'")
+ *                   - this API does support multi-level leaf like a/b/c
+ *       - https://{Endpoint}/drives/{driveID}/root/children('@a1')/{route}?@a1=URLEncode({path})
+ *	         - Same as above
  */
 
 // parseNormalizedID parses a normalized ID (may be in the form `driveID#itemID` or just `itemID`)
@@ -1974,13 +1989,12 @@ func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
 	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
 	if strings.Index(ID, "#") >= 0 {
 		s := strings.Split(ID, "#")
-		//return s[1], s[0], graphURL + "/drives"
 		return s[1], s[0], rootURL
 	}
 	return ID, "", ""
 }
 
-// newOptsCall build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID)
+// newOptsCall build the rest.Opts structure with *a normalizedID(driveID#fileID, or simply fileID)*
 // using url template https://{Endpoint}/drives/{driveID}/items/{itemID}/{route}
 func (f *Fs) newOptsCall(normalizedID string, method string, route string) (opts rest.Opts) {
 	id, drive, rootURL := f.parseNormalizedID(normalizedID)
@@ -2002,10 +2016,12 @@ func escapeSingleQuote(str string) string {
 	return strings.ReplaceAll(str, "'", "''")
 }
 
-// newOptsCallWithIDPath build the rest.Opts structure with a normalizedID(driveID#fileID, or simply fileID) and leaf
-// using url template https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route}
+// newOptsCallWithIDPath build the rest.Opts structure with *a normalizedID (driveID#fileID, or simply fileID) and leaf*
+// using url template https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route} (for international OneDrive)
 // or https://{Endpoint}/drives/{driveID}/items/children('{leaf}')/{route}
-// this function will only work when the leaf is "" or a child name (i.e. it doesn't accept multi-level leaf)
+// and https://{Endpoint}/drives/{driveID}/items/children('@a1')/{route}?@a1=URLEncode("'{leaf}'") (for 21ViaNet)
+// if isPath is false, this function will only work when the leaf is "" or a child name (i.e. it doesn't accept multi-level leaf)
+// if isPath is true, multi-level leaf like a/b/c can be passed
 func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool, method string, route string) (opts rest.Opts, ok bool) {
 	encoder := f.opt.Enc.FromStandardName
 	if isPath {
@@ -2040,7 +2056,7 @@ func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool
 	return
 }
 
-// newOptsCallWithIDPath build the rest.Opts structure with an absolute path start from root
+// newOptsCallWithIDPath build the rest.Opts structure with an *absolute path start from root*
 // using url template https://{Endpoint}/drives/{driveID}/root:/{path}:/{route}
 // or https://{Endpoint}/drives/{driveID}/root/children('@a1')/{route}?@a1=URLEncode({path})
 func (f *Fs) newOptsCallWithRootPath(path string, method string, route string) (opts rest.Opts) {
@@ -2055,8 +2071,9 @@ func (f *Fs) newOptsCallWithRootPath(path string, method string, route string) (
 	}
 }
 
-// newOptsCallWithPath build the rest.Opt intelligently, which will first try to resolve the path using dircache.
-// If present in cache, then use IDPath variant, else fallback into RootPath variant
+// newOptsCallWithPath build the rest.Opt intelligently.
+// It will first try to resolve the path using dircache, which enables support for "Share with me" files.
+// If present in cache, then use ID + Path variant, else fallback into RootPath variant
 func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string, route string) (opts rest.Opts) {
 	if path == "" {
 		url := "/root" + route
@@ -2066,10 +2083,13 @@ func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string
 		}
 	}
 
+	// find dircache
 	leaf, directoryID, _ := f.dirCache.FindPath(ctx, path, false)
+	// try to use IDPath variant first
 	if opts, ok := f.newOptsCallWithIDPath(directoryID, leaf, false, method, route); ok {
 		return opts
 	}
+	// fallback to use RootPath variant first
 	return f.newOptsCallWithRootPath(path, method, route)
 }
 
