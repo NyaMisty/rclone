@@ -593,8 +593,7 @@ func shouldRetry(resp *http.Response, err error) (bool, error) {
 //
 // If `relPath` == '', do not append the slash (See #3664)
 func (f *Fs) readMetaDataForPathRelativeToID(ctx context.Context, normalizedID string, relPath string) (info *api.Item, resp *http.Response, err error) {
-	opts, _ := f.newOptsCallWithIDPath(normalizedID, relPath, "GET", "")
-	opts.Path = strings.TrimSuffix(opts.Path, ":")
+	opts, _ := f.newOptsCallWithIDPath(normalizedID, relPath, true, "GET", "")
 
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err = f.srv.CallJSON(ctx, &opts, nil, &info)
@@ -2007,15 +2006,22 @@ func escapeSingleQuote(str string) string {
 // using url template https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route}
 // or https://{Endpoint}/drives/{driveID}/items/children('{leaf}')/{route}
 // this function will only work when the leaf is "" or a child name (i.e. it doesn't accept multi-level leaf)
-func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, method string, route string) (opts rest.Opts, ok bool) {
+func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool, method string, route string) (opts rest.Opts, ok bool) {
+	encoder := f.opt.Enc.FromStandardName
+	if isPath {
+		encoder = f.opt.Enc.FromStandardPath
+	}
 	trueDirID, drive, rootURL := f.parseNormalizedID(normalizedID)
 	if drive == "" {
 		trueDirID = normalizedID
 	}
-	entity := "/items/" + trueDirID + ":/" + withTrailingColon(rest.URLPathEscape(f.opt.Enc.FromStandardName(leaf))) + route
+	entity := "/items/" + trueDirID + ":/" + withTrailingColon(rest.URLPathEscape(encoder(leaf))) + route
 	if f.opt.Region == regionCN {
-		//path = "/" + drive + "/items/" + trueDirID + "/children('@a1')" + route + "?@a1=" + url.QueryEscape("'" + f.opt.Enc.FromStandardName(leaf) + "'")
-		entity = "/items/" + trueDirID + "/children('" + rest.URLPathEscape(f.opt.Enc.FromStandardName(escapeSingleQuote(leaf))) + "')" + route
+		if isPath {
+			entity = "/items/" + trueDirID + "/children('@a1')" + route + "?@a1=" + url.QueryEscape("'"+encoder(escapeSingleQuote(leaf))+"'")
+		} else {
+			entity = "/items/" + trueDirID + "/children('" + rest.URLPathEscape(encoder(escapeSingleQuote(leaf))) + "')" + route
+		}
 	}
 	if drive == "" {
 		ok = false
@@ -2061,7 +2067,7 @@ func (f *Fs) newOptsCallWithPath(ctx context.Context, path string, method string
 	}
 
 	leaf, directoryID, _ := f.dirCache.FindPath(ctx, path, false)
-	if opts, ok := f.newOptsCallWithIDPath(directoryID, leaf, method, route); ok {
+	if opts, ok := f.newOptsCallWithIDPath(directoryID, leaf, false, method, route); ok {
 		return opts
 	}
 	return f.newOptsCallWithRootPath(path, method, route)
