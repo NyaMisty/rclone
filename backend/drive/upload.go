@@ -15,16 +15,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/valyala/bytebufferpool"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"reflect"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/lib/readers"
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
+
+	"github.com/go-redis/redis/v8"
 )
 
 const (
@@ -47,6 +55,23 @@ type resumableUpload struct {
 	ContentLength int64
 	// Return value
 	ret *drive.File
+}
+
+var RedisClient *redis.Client
+var RedisKey string
+
+type _Empty struct{}
+
+func init() {
+	RedisClient = redis.NewClient(
+		&redis.Options{
+			Addr:     "localhost:6379",
+			Username: "rclone",
+			Password: "rclone",
+			DB:       0,
+		})
+	pkgs := strings.Split(reflect.TypeOf(_Empty{}).PkgPath(), "/")
+	RedisKey = fmt.Sprintf("rclone-%s-streams", pkgs[len(pkgs)-1])
 }
 
 // Upload the io.Reader in of size bytes with contentType and info
@@ -90,6 +115,7 @@ func (f *Fs) Upload(ctx context.Context, in io.Reader, size int64, contentType, 
 		if size >= 0 {
 			req.Header.Set("X-Upload-Content-Length", fmt.Sprintf("%v", size))
 		}
+		req.Header.Set("x-goog-api-client", "gl-go/1.13.8 gdcl/20200721")
 		res, err = f.client.Do(req)
 		if err == nil {
 			defer googleapi.CloseBody(res)
@@ -109,6 +135,14 @@ func (f *Fs) Upload(ctx context.Context, in io.Reader, size int64, contentType, 
 		MediaType:     contentType,
 		ContentLength: size,
 	}
+	go func() {
+		ret := RedisClient.HSet(context.Background(), RedisKey, loc, fmt.Sprintf("uploading-pid%d", os.Getpid()))
+		id, err := ret.Result()
+		fs.Debugf(rx.remote, "Got redis ret: %v %v", id, err)
+	}()
+	defer func() {
+		go RedisClient.HSet(context.Background(), RedisKey, loc, "finished")
+	}()
 	return rx.Upload(ctx)
 }
 
@@ -149,7 +183,7 @@ func (rx *resumableUpload) transferChunk(ctx context.Context, start int64, chunk
 
 	// When the entire file upload is complete, the server
 	// responds with an HTTP 201 Created along with any metadata
-	// associated with this resource. If this request had been
+	// associated with this resource. I	f this request had been
 	// updating an existing entity rather than creating a new one,
 	// the HTTP response code for a completed upload would have
 	// been 200 OK.
@@ -164,13 +198,23 @@ func (rx *resumableUpload) transferChunk(ctx context.Context, start int64, chunk
 	return res.StatusCode, nil
 }
 
+var bufPool bytebufferpool.Pool
+var OpenedFiles sync.Map
+
 // Upload uploads the chunks from the input
 // It retries each chunk using the pacer and --low-level-retries
 func (rx *resumableUpload) Upload(ctx context.Context) (*drive.File, error) {
 	start := int64(0)
 	var StatusCode int
 	var err error
-	buf := make([]byte, int(rx.f.opt.ChunkSize))
+	overtime := 0
+	curChunkSize := 8 * 1024 * 1024
+	//curChunkSize := 256 * 1024
+	buf := make([]byte, curChunkSize)
+
+	OpenedFiles.Store(rx.remote, rx.Media)
+	defer OpenedFiles.Delete(rx.remote)
+
 	for finished := false; !finished; {
 		var reqSize int64
 		var chunk io.ReadSeeker
@@ -187,23 +231,62 @@ func (rx *resumableUpload) Upload(ctx context.Context) (*drive.File, error) {
 		} else {
 			// If size unknown read into buffer
 			var n int
-			n, err = readers.ReadFill(rx.Media, buf)
-			if err == io.EOF {
+
+			n, err = func(r io.Reader, buf []byte) (n int, err error) {
+				s := time.Now()
+				var nn int
+				for n < len(buf) && err == nil {
+					e := n + int(minChunkSize)
+					if e > len(buf) {
+						e = len(buf)
+					}
+					nn, err = readers.ReadFill(r, buf[n:e])
+					n += nn
+					if n > len(buf)/2 && time.Now().Sub(s) > time.Second*6 {
+						break
+					}
+				}
+				return n, err
+			}(rx.Media, buf)
+			//n, err = readers.ReadFill(rx.Media, buf)
+			if err != nil {
+				if err != io.EOF {
+					fs.Errorf(rx.remote, "Error reading: %s", err)
+				}
 				// Send the last chunk with the correct ContentLength
 				// otherwise Google doesn't know we've finished
 				rx.ContentLength = start + int64(n)
 				finished = true
-			} else if err != nil {
-				return nil, err
 			}
 			reqSize = int64(n)
 			chunk = bytes.NewReader(buf[:reqSize])
+			if n > curChunkSize-262144*2 {
+				//overtime++
+			} else {
+				if overtime > -5 {
+					overtime--
+				}
+			}
+			if overtime > 2 {
+				if curChunkSize < int(rx.f.opt.ChunkSize) {
+					curChunkSize += 1 * 1024 * 1024
+					buf = make([]byte, curChunkSize)
+				}
+				overtime = 0
+			}
 		}
 
 		// Transfer the chunk
 		err = rx.f.pacer.Call(func() (bool, error) {
 			fs.Debugf(rx.remote, "Sending chunk %d length %d", start, reqSize)
+			s := time.Now()
 			StatusCode, err = rx.transferChunk(ctx, start, chunk, reqSize)
+			usedTime := time.Now().Sub(s)
+			f := fs.Debugf
+			if usedTime > time.Millisecond*1200 {
+				f = fs.Infof
+			}
+			f(rx.remote, "Sent chunk %d length %d in time %s", start, reqSize, usedTime)
 			again, err := rx.f.shouldRetry(err)
 			if StatusCode == statusResumeIncomplete || StatusCode == http.StatusCreated || StatusCode == http.StatusOK {
 				again = false

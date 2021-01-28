@@ -6,7 +6,7 @@ require (
 	bazil.org/fuse v0.0.0-20200524192727-fb710f7dfd05
 	cloud.google.com/go v0.70.0 // indirect
 	github.com/Azure/azure-pipeline-go v0.2.3
-	github.com/Azure/azure-storage-blob-go v0.12.0
+	github.com/Azure/azure-storage-blob-go v0.13.0
 	github.com/Azure/go-autorest/autorest/adal v0.9.8
 	github.com/Unknwon/goconfig v0.0.0-20200908083735-df7de6a44db8
 	github.com/a8m/tree v0.0.0-20201026183218-fce18e2a750e
@@ -22,6 +22,7 @@ require (
 	github.com/coreos/go-semver v0.3.0
 	github.com/dropbox/dropbox-sdk-go-unofficial v5.6.0+incompatible
 	github.com/gabriel-vasile/mimetype v1.1.1
+	github.com/go-redis/redis/v8 v8.4.8
 	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/hanwen/go-fuse/v2 v2.0.3
@@ -52,6 +53,8 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.6.1
 	github.com/t3rm1n4l/go-mega v0.0.0-20200416171014-ffad7fcb44b8
+
+	github.com/valyala/bytebufferpool v1.0.0
 	github.com/xanzy/ssh-agent v0.3.0
 	github.com/youmark/pkcs8 v0.0.0-20201027041543-1326539a0a0a
 	github.com/yunify/qingstor-sdk-go/v3 v3.2.0
@@ -59,7 +62,7 @@ require (
 	go.uber.org/zap v1.16.0 // indirect
 	goftp.io/server v0.4.0
 	golang.org/x/crypto v0.0.0-20201112155050-0c6587e931a9
-	golang.org/x/net v0.0.0-20201029055024-942e2f445f3c
+	golang.org/x/net v0.0.0-20201202161906-c7110b5ffcbb
 	golang.org/x/oauth2 v0.0.0-20200902213428-5d25da1a8d43
 	golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9
 	golang.org/x/sys v0.0.0-20201029080932-201ba4db2418
@@ -73,3 +76,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.0-20200615113413-eeeca48fe776 // indirect
 	storj.io/uplink v1.4.1
 )
+
+//replace github.com/smallnest/ringbuffer => ../../smallnest/ringbuffer

@@ -147,7 +147,11 @@ func LogPrintf(level LogLevel, o interface{}, text string, args ...interface{}) 
 		}
 	} else {
 		if o != nil {
-			out = fmt.Sprintf("%v: %s", o, out)
+			if obj, ok := o.(Object); ok {
+				out = fmt.Sprintf("%v: %s", obj.Fs().Name()+":"+obj.Fs().String()+"/"+obj.String(), out)
+			} else {
+				out = fmt.Sprintf("%v: %s", o, out)
+			}
 		}
 		LogPrint(level, out)
 	}

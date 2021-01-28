@@ -104,6 +104,9 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) ht
 	// Start with a sensible set of defaults then override.
 	// This also means we get new stuff when it gets added to go
 	t := new(http.Transport)
+	//t := http.DefaultTransport
+	//var t *http.Transport
+	//t := http.DefaultTransport.(*http.Transport)
 	structs.SetDefaults(t, http.DefaultTransport.(*http.Transport))
 	t.Proxy = http.ProxyFromEnvironment
 	t.MaxIdleConnsPerHost = 2 * (ci.Checkers + ci.Transfers + 1)
@@ -144,9 +147,9 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) ht
 	}
 
 	t.DisableCompression = ci.NoGzip
-	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	/*t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return dialContextTimeout(ctx, network, addr, ci)
-	}
+	}*/
 	t.IdleConnTimeout = 60 * time.Second
 	t.ExpectContinueTimeout = ci.ExpectContinueTimeout
 
@@ -190,7 +193,8 @@ func NewClient(ctx context.Context) *http.Client {
 // * Sets the User Agent
 // * Does logging
 type Transport struct {
-	*http.Transport
+	//*http.Transport
+	Transport     http.RoundTripper
 	dump          fs.DumpFlags
 	filterRequest func(req *http.Request)
 	userAgent     string
@@ -199,7 +203,7 @@ type Transport struct {
 
 // newTransport wraps the http.Transport passed in and logs all
 // roundtrips including the body if logBody is set.
-func newTransport(ci *fs.ConfigInfo, transport *http.Transport) *Transport {
+func newTransport(ci *fs.ConfigInfo, transport http.RoundTripper) *Transport {
 	return &Transport{
 		Transport: transport,
 		dump:      ci.Dump,

@@ -15,8 +15,11 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"mime"
 	"net/http"
+	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -61,8 +64,8 @@ const (
 	shortcutMimeTypeDangling    = "application/vnd.google-apps.shortcut.dangling" // synthetic mime type for internal use
 	timeFormatIn                = time.RFC3339
 	timeFormatOut               = "2006-01-02T15:04:05.000000000Z07:00"
-	defaultMinSleep             = fs.Duration(100 * time.Millisecond)
-	defaultBurst                = 100
+	defaultMinSleep             = fs.Duration(1000 * time.Millisecond)
+	defaultBurst                = 80
 	defaultExportExtensions     = "docx,xlsx,pptx,svg"
 	scopePrefix                 = "https://www.googleapis.com/auth/"
 	defaultScope                = "drive"
@@ -233,6 +236,9 @@ a non root folder as its starting point.
 		}, {
 			Name: "service_account_file",
 			Help: "Service Account Credentials JSON file path \nLeave blank normally.\nNeeded only if you want use SA instead of interactive login." + env.ShellExpandHelp,
+		}, {
+			Name: "service_account_file_path",
+			Help: "Service Account Credentials JSON file path .\n",
 		}, {
 			Name:     "service_account_credentials",
 			Help:     "Service Account Credentials JSON blob\nLeave blank normally.\nNeeded only if you want use SA instead of interactive login.",
@@ -433,8 +439,8 @@ need to use --ignore size also.`,
 			Advanced: true,
 		}, {
 			Name:    "server_side_across_configs",
-			Default: false,
-			Help: `Allow server-side operations (e.g. copy) to work across different drive configs.
+			Default: true,
+			Help: `Allow server side operations (eg copy) to work across different drive configs.
 
 This can be useful if you wish to do a server-side copy between two
 different Google drives.  Note that this isn't enabled by default
@@ -526,6 +532,7 @@ type Options struct {
 	Scope                     string               `config:"scope"`
 	RootFolderID              string               `config:"root_folder_id"`
 	ServiceAccountFile        string               `config:"service_account_file"`
+	ServiceAccountFilePath    string               `config:"service_account_file_path"`
 	ServiceAccountCredentials string               `config:"service_account_credentials"`
 	TeamDriveID               string               `config:"team_drive"`
 	AuthOwnerOnly             bool                 `config:"auth_owner_only"`
@@ -580,6 +587,11 @@ type Fs struct {
 	grouping         int32               // number of IDs to search at once in ListR - read with atomic
 	listRmu          *sync.Mutex         // protects listRempties
 	listRempties     map[string]struct{} // IDs of supposedly empty directories which triggered grouping disable
+
+	ServiceAccountFiles map[string]int
+	waitChangeSvc       sync.Mutex
+	FileObj             *fs.Object
+	FileName            string
 }
 
 type baseObject struct {
@@ -650,6 +662,11 @@ func (f *Fs) shouldRetry(err error) (bool, error) {
 		if len(gerr.Errors) > 0 {
 			reason := gerr.Errors[0].Reason
 			if reason == "rateLimitExceeded" || reason == "userRateLimitExceeded" {
+				// 如果存在 ServiceAccountFilePath,调用 changeSvc, 重试
+				if f.opt.ServiceAccountFilePath != "" {
+					f.changeSvc()
+					return true, err
+				}
 				if f.opt.StopOnUploadLimit && gerr.Errors[0].Message == "User rate limit exceeded." {
 					fs.Errorf(f, "Received upload limit error: %v", err)
 					return false, fserrors.FatalError(err)
@@ -665,6 +682,59 @@ func (f *Fs) shouldRetry(err error) (bool, error) {
 		}
 	}
 	return false, err
+}
+
+// 替换 f.svc 函数
+func (f *Fs) changeSvc() {
+	f.waitChangeSvc.Lock()
+	defer f.waitChangeSvc.Unlock()
+	opt := &f.opt
+	/**
+	 *  获取sa文件列表
+	 */
+	if opt.ServiceAccountFilePath != "" && len(f.ServiceAccountFiles) == 0 {
+		f.ServiceAccountFiles = make(map[string]int)
+		dir_list, e := ioutil.ReadDir(opt.ServiceAccountFilePath)
+		if e != nil {
+			fmt.Println("read ServiceAccountFilePath Files error")
+		}
+		for i, v := range dir_list {
+			filePath := fmt.Sprintf("%s%s", opt.ServiceAccountFilePath, v.Name())
+			if ".json" == path.Ext(filePath) {
+				//fmt.Println(filePath)
+				f.ServiceAccountFiles[filePath] = i
+			}
+		}
+	}
+	// 如果读取文件夹后还是0 , 退出
+	if len(f.ServiceAccountFiles) <= 0 {
+		return
+	}
+	/**
+	 *  从sa文件列表 随机取一个，并删除列表中的元素
+	 */
+	r := rand.Intn(len(f.ServiceAccountFiles))
+	for k := range f.ServiceAccountFiles {
+		if r == 0 {
+			opt.ServiceAccountFile = k
+		}
+		r--
+	}
+	// 从库存中删除
+	delete(f.ServiceAccountFiles, opt.ServiceAccountFile)
+
+	/**
+	 * 创建 client 和 svc
+	 */
+	loadedCreds, _ := ioutil.ReadFile(os.ExpandEnv(opt.ServiceAccountFile))
+	opt.ServiceAccountCredentials = string(loadedCreds)
+	oAuthClient, err := getServiceAccountClient(context.Background(), opt, []byte(opt.ServiceAccountCredentials))
+	if err != nil {
+		errors.Wrap(err, "failed to create oauth client from service account")
+	}
+	f.client = oAuthClient
+	f.svc, err = drive.New(f.client)
+	//fs.Infof("changed gclone sa file: %s", opt.ServiceAccountFile)
 }
 
 // parseParse parses a drive 'url'
@@ -981,16 +1051,21 @@ func configTeamDrive(ctx context.Context, opt *Options, m configmap.Mapper, name
 	return nil
 }
 
+var driveClient *http.Client
+
 // getClient makes an http client according to the options
 func getClient(ctx context.Context, opt *Options) *http.Client {
-	t := fshttp.NewTransportCustom(ctx, func(t *http.Transport) {
-		if opt.DisableHTTP2 {
-			t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if true { //driveClient == nil {
+		t := fshttp.NewTransportCustom(ctx, func(t *http.Transport) {
+			if opt.DisableHTTP2 {
+				t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+			}
+		})
+		driveClient = &http.Client{
+			Transport: t,
 		}
-	})
-	return &http.Client{
-		Transport: t,
 	}
+	return driveClient
 }
 
 func getServiceAccountClient(ctx context.Context, opt *Options, credentialsData []byte) (*http.Client, error) {
@@ -1034,7 +1109,7 @@ func createOAuthClient(ctx context.Context, opt *Options, name string, m configm
 }
 
 func checkUploadChunkSize(cs fs.SizeSuffix) error {
-	if !isPowerOfTwo(int64(cs)) {
+	if false && !isPowerOfTwo(int64(cs)) {
 		return errors.Errorf("%v isn't a power of two", cs)
 	}
 	if cs < minChunkSize {
@@ -1207,6 +1282,7 @@ func NewFs(ctx context.Context, name, path string, m configmap.Mapper) (fs.Fs, e
 		f.root = tempF.root
 		return f, fs.ErrorIsFile
 	}
+	f.changeSvc()
 	// fmt.Printf("Root id %s", f.dirCache.RootID())
 	return f, nil
 }
@@ -2070,6 +2146,9 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 // This will create a duplicate if we upload a new file without
 // checking to see if there is one already - use Put() for that.
 func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	// every time create a object, renew a service account
+	f.changeSvc()
+
 	remote := src.Remote()
 	size := src.Size()
 	modTime := src.ModTime(ctx)
@@ -2556,6 +2635,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 			AddParents(dstParents).
 			Fields(partialFields).
 			SupportsAllDrives(true).
+			SupportsTeamDrives(true).
 			Do()
 		return f.shouldRetry(err)
 	})
@@ -2590,6 +2670,11 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 	err = f.pacer.Call(func() (bool, error) {
 		// TODO: On TeamDrives this might fail if lacking permissions to change ACLs.
 		// Need to either check `canShare` attribute on the object or see if a sufficient permission is already present.
+		list, err := f.svc.Permissions.List(id).
+			Fields("").
+			SupportsAllDrives(true).
+			Do()
+		log.Println(list)
 		_, err = f.svc.Permissions.Create(id, permission).
 			Fields("").
 			SupportsAllDrives(true).

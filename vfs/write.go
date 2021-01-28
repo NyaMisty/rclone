@@ -244,7 +244,8 @@ func (fh *WriteFileHandle) Flush() error {
 		_, err := fh.writeAt([]byte{}, fh.offset)
 		return err
 	}
-	err := fh.close()
+	var err error
+	//err := fh.close()
 	if err != nil {
 		fs.Errorf(fh.remote, "WriteFileHandle.Flush error: %v", err)
 	} else {
