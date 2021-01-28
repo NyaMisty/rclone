@@ -18,7 +18,6 @@ import (
 	"math/rand"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"sort"

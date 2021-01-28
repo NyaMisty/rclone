@@ -63,8 +63,8 @@ func main() {
 		DisableKeepAlives:  false,
 		DisableCompression: true,
 	}
-	fs.Config.StreamingUploadCutoff = fs.SizeSuffix(0)
-	fs.Config.IgnoreChecksum = true
+	fs.GetConfig(nil).StreamingUploadCutoff = fs.SizeSuffix(0)
+	fs.GetConfig(nil).IgnoreChecksum = true
 	rand.Seed(time.Now().UnixNano())
 	/*go func() {
 		t := time.NewTicker(time.Second * 3)
@@ -75,7 +75,7 @@ func main() {
 			<-t.C
 		}
 	}()*/
-	fs.Config.UserAgent = "google-api-go-client/0.5"
+	fs.GetConfig(nil).UserAgent = "google-api-go-client/0.5"
 	if false {
 		dialer := &net.Dialer{
 			Timeout:   10 * time.Second,
