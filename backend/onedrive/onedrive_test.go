@@ -34,6 +34,20 @@ func TestIntegrationCn(t *testing.T) {
 	})
 }
 
+// TestIntegrationCnSp runs integration tests against the remote
+func TestIntegrationCnSp(t *testing.T) {
+	if *fstest.RemoteName != "" {
+		t.Skip("skipping as -remote is set")
+	}
+	fstests.Run(t, &fstests.Opt{
+		RemoteName: "TestOneDriveCnSp:",
+		NilObject:  (*Object)(nil),
+		ChunkedUpload: fstests.ChunkedUploadConfig{
+			CeilChunkSize: fstests.NextMultipleOf(chunkSizeMultiple),
+		},
+	})
+}
+
 func (f *Fs) SetUploadChunkSize(cs fs.SizeSuffix) (fs.SizeSuffix, error) {
 	return f.setUploadChunkSize(cs)
 }
