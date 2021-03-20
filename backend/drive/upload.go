@@ -260,8 +260,8 @@ func (rx *resumableUpload) Upload(ctx context.Context) (*drive.File, error) {
 			}
 			reqSize = int64(n)
 			chunk = bytes.NewReader(buf[:reqSize])
-			if n > curChunkSize-262144*2 {
-				//overtime++
+			if n > curChunkSize-262144*3 {
+				overtime++
 			} else {
 				if overtime > -5 {
 					overtime--
@@ -270,6 +270,12 @@ func (rx *resumableUpload) Upload(ctx context.Context) (*drive.File, error) {
 			if overtime > 2 {
 				if curChunkSize < int(rx.f.opt.ChunkSize) {
 					curChunkSize += 1 * 1024 * 1024
+					buf = make([]byte, curChunkSize)
+				}
+				overtime = 0
+			} else if overtime < -3 {
+				if curChunkSize > 4*1024*1024 {
+					curChunkSize -= 1 * 1024 * 1024
 					buf = make([]byte, curChunkSize)
 				}
 				overtime = 0
