@@ -1447,6 +1447,86 @@ func RcatSize(ctx context.Context, fdst fs.Fs, dstFileName string, in io.ReadClo
 // copyURLFunc is called from CopyURLFn
 type copyURLFunc func(ctx context.Context, dstFileName string, in io.ReadCloser, size int64, modTime time.Time) (err error)
 
+type noStopDownloader struct {
+	client *http.Client
+	url    string
+	length int64
+	curResp *http.Response
+	curPos int64
+}
+
+func NewNoStopDownloader(client *http.Client, url string, resp *http.Response) *noStopDownloader {
+	return &noStopDownloader{
+		client: client,
+		url:    url,
+		curResp: resp,
+		length: resp.ContentLength,
+		curPos: 0,
+	}
+}
+
+func (d *noStopDownloader) Read(p []byte) (n int, err error) {
+	n, err = d.curResp.Body.Read(p)
+	d.curPos += int64(n)
+	if d.curPos == d.length {
+		return
+	}
+	if _, err = d.curResp.Body.Read(nil); err != nil {
+		d.curResp.Body.Close()
+		for i := 0; i < 8; i++ {
+			fs.Infof( nil, "Http connection lost, trying to continue, lastErr: %v", err)
+			if i != 0 {
+				time.Sleep(time.Second * 30)
+			}
+			r, _err := http.NewRequest("GET", d.url, nil)
+			if _err != nil {
+				return n, _err
+			}
+			r.Header.Set("Range", fmt.Sprintf("bytes=%v-", d.curPos))
+			resp, _err := d.client.Do(r)
+			if _err != nil {
+				err = fmt.Errorf("failed to do range req: %v", _err)
+				time.Sleep(60 * time.Second)
+				continue
+			}
+			if resp.StatusCode > 300 {
+				err = fmt.Errorf("didn't return 206, got %v", resp.StatusCode)
+				time.Sleep(60 * time.Second)
+				continue
+			}
+			if resp.StatusCode != 206 {
+				err = fmt.Errorf("didn't return 206, got %v", resp.StatusCode)
+				continue
+			}
+			if hdr, ok := resp.Header["Content-Range"]; !ok || len(hdr) == 0 {
+				return n, fmt.Errorf("didn't receive content-range")
+			} else {
+				lenInfo := strings.Split(hdr[0], "/")
+				if len(lenInfo) != 2 {
+					return n, fmt.Errorf("malform content-range: %s", hdr)
+				}
+				if totalLen, err := strconv.ParseInt(lenInfo[1], 10, 64); err != nil {
+					return n, fmt.Errorf("failed to parse content-range length: %s", lenInfo[1])
+				} else {
+					if totalLen != d.length {
+						return n, fmt.Errorf("content length not consistent (%v != %v)", d.length, totalLen)
+					} else {
+						d.curResp = resp
+						fs.Infof( nil, "Successfully continued reading with url: %s", resp.Request.URL.String())
+						return n, nil
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
+func (d *noStopDownloader) Close() error {
+	d.curResp.Body.Close()
+	return nil
+}
+
 // copyURLFn copies the data from the url to the function supplied
 func copyURLFn(ctx context.Context, dstFileName string, url string, dstFileNameFromURL bool, fn copyURLFunc) (err error) {
 	client := fshttp.NewClient(fs.Config)
@@ -1455,9 +1535,11 @@ func copyURLFn(ctx context.Context, dstFileName string, url string, dstFileNameF
 		return err
 	}
 	defer fs.CheckClose(resp.Body, &err)
+	d := NewNoStopDownloader(client, url, resp)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return errors.Errorf("CopyURL failed: %s", resp.Status)
 	}
+	fs.Infof( nil, "Going to start download using %s", resp.Request.URL.String())
 	modTime, err := http.ParseTime(resp.Header.Get("Last-Modified"))
 	if err != nil {
 		modTime = time.Now()
@@ -1468,7 +1550,7 @@ func copyURLFn(ctx context.Context, dstFileName string, url string, dstFileNameF
 			return errors.Errorf("CopyURL failed: file name wasn't found in url")
 		}
 	}
-	return fn(ctx, dstFileName, resp.Body, resp.ContentLength, modTime)
+	return fn(ctx, dstFileName, d, resp.ContentLength, modTime)
 }
 
 // CopyURL copies the data from the url to (fdst, dstFileName)
